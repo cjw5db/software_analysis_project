@@ -9,7 +9,7 @@ docker pull klee/klee
 ```
 - Create a container for the project and make sure the first argument to `--volumes` is the path to the folder that contains our git repo:
 ```bash
-docker run -ti --name=software_analysis_project --volume=/Users/connerward/klee/test:/home/klee/shared --ulimit='stack=-1:-1' klee/klee
+docker run -ti --name=software_analysis_project --volume=/path/to/this/git/repo/locally:/home/klee/shared --ulimit='stack=-1:-1' klee/klee
 ```
 - Inside the docker container, add these two lines to the end of your `~/.bashrc` file:
 ```bash
