@@ -16,12 +16,16 @@ docker run -ti --name=software_analysis_project --volume=/path/to/this/git/repo/
 alias compile="clang -emit-llvm -g -c -O0 -Xclang -disable-O0-optnone"
 alias graph="compile -Xclang -analyze -Xclang -analyzer-checker=debug.DumpCFG"
 ```
-You may have to restart your container for these aliases to take effect.
-This will get you the CFG for a program:
+__NOTE__: You may have to restart your container for these aliases to take effect.
+
+## Usage
+
+To get the control flow graph for your program:
 ```bash
 graph large-data-constraint.c
 ```
-This will get you a `.bc` file for your program that can be run on Klee:
+
+To get a `.bc` file for your program that can be run on Klee:
 ```bash
 compile large-data-constraint.c
 klee large-data-constraint.bc
