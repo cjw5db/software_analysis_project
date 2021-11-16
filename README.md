@@ -2,7 +2,7 @@
 
 ## One-Time Setup
 - Clone this repo into a folder on your machine.  Note the path of the folder for when you create the docker container.
-- Download Docker Desktop (if you don't have it already): https://www.docker.com/products/docker-desktop
+- Download Docker Desktop (if you don't have it already) and start it: https://www.docker.com/products/docker-desktop
 - Pull the klee container
 ```bash
 docker pull klee/klee
