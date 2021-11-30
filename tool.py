@@ -1,6 +1,20 @@
 import sys
 import subprocess
 import re
+import os
+
+#validate command line input
+if len(sys.argv) < 2:
+    print("Command line arguments are required")
+    exit()
+else:
+    for arg in sys.argv[1:]:
+        if not arg.endswith(".c") and not arg.endswith(".cpp"):
+            print(arg + " is not a c or cpp file")
+            exit()
+        if not os.path.exists(arg):
+            print(arg + " is not a valid file")
+            exit()
 
 #generate control flow graph
 command = "clang -c -Xclang -analyze -Xclang -analyzer-checker=debug.DumpCFG "
