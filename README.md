@@ -14,21 +14,27 @@ docker run -ti --name=software_analysis_project --volume=/path/to/this/git/repo/
 - Inside the docker container, add these two lines to the end of your `~/.bashrc` file:
 ```bash
 alias compile="clang -emit-llvm -g -c -O0 -Xclang -disable-O0-optnone"
-alias graph="compile -Xclang -analyze -Xclang -analyzer-checker=debug.DumpCFG"
+alias cfg="clang -c -Xclang -analyze -Xclang -analyzer-checker=debug.DumpCFG"
+alias dominators="clang -c -Xclang -analyze -Xclang -analyzer-checker=debug.DumpDominators"
 ```
 __NOTE__: You may have to restart your container for these aliases to take effect.
 
 ## Usage
 
-To get the control flow graph for your program:
-```bash
-graph large-data-constraint.c
-```
-
 To get a `.bc` file for your program that can be run on Klee:
 ```bash
-compile large-data-constraint.c
-klee large-data-constraint.bc
+compile examples/basic.c
+klee basic.bc
+```
+
+To get the control flow graph for your program:
+```bash
+cfg examples/basic.c
+```
+
+To get the dominance tree for your program:
+```bash
+dominators examples/basic.c
 ```
 
 ## Docker
