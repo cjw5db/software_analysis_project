@@ -21,6 +21,7 @@ class Analyzer:
         self.back_edges = {}
         self.loops = {}
         self.definitions = {}
+        self.reachability = {}
         self.names = name_str.splitlines()
         function = ""
         block = ""
@@ -29,20 +30,20 @@ class Analyzer:
             if len(line) == 0:
                 continue
             if bool(re.match("\[", line)):
-                block = re.search("\d+", line)[0]
+                block = int(re.search("\d+", line)[0])
                 self.cfg[function][block] = {}
             elif bool(re.match("\d+", line)):
                 elements = line.split(":", maxsplit=1)
-                self.cfg[function][block][elements[0]] = elements[1].strip()
+                self.cfg[function][block][int(elements[0])] = elements[1].strip()
             elif bool(re.match("T", line)):
                 elements = line.split(":", maxsplit=1)
                 self.cfg[function][block]["T"] = elements[1].strip()
             elif bool(re.match("Preds", line)):
                 elements = line.split(":", maxsplit=1)
-                self.cfg[function][block]["Preds"] = re.findall("\d+", elements[1]);
+                self.cfg[function][block]["Preds"] = list(map(int, re.findall("\d+", elements[1])))
             elif bool(re.match("Succs", line)):
                 elements = line.split(":", maxsplit=1)
-                self.cfg[function][block]["Succs"] = re.findall("\d+", elements[1]);
+                self.cfg[function][block]["Succs"] = list(map(int, re.findall("\d+", elements[1])))
             else:
                 function = line
                 self.cfg[function] = {}
@@ -50,8 +51,9 @@ class Analyzer:
                 self.loops[function] = []
                 self.definitions[function] = { 'Count': 0 }
                 self.functions.append(function)
+                self.reachability[function] = {}
         for function, blocks in self.cfg.items():
-            self.cfg[function] = dict(sorted(blocks.items(), key=lambda kv: int(kv[0]), reverse=True))
+            self.cfg[function] = dict(sorted(blocks.items(), key=lambda kv: kv[0], reverse=True))
 
     def __str__(self):
         #print data structure
@@ -59,7 +61,7 @@ class Analyzer:
         for function in self.functions:
             string += "\n" + function + "\n"
             for block, lines in self.cfg[function].items():
-                string += bcolors.YELLOW + "  " + block + "\n" + bcolors.ENDC
+                string += bcolors.YELLOW + "  " + str(block) + "\n" + bcolors.ENDC
                 if isinstance(lines, list):
                     for item in lines:
                         string += ("    " + str(item) + "\n")
@@ -73,14 +75,14 @@ class Analyzer:
                             string += bcolors.PURPLE
                         elif "Succs" == key:
                             string += bcolors.PURPLE
-                        string += ("    " + key + ":" + str(value) + "\n")
+                        string += ("    " + str(key) + ":" + str(value) + "\n")
                 else:
                     string += ("    " + lines + "\n")
                 string += bcolors.ENDC
 
             string += "\n    Back Edges:\n" + bcolors.GREEN
             for key, value in self.back_edges[function].items():
-                string += "    " + key + ":" + value + "\n"
+                string += "    " + str(key) + ":" + str(value) + "\n"
             string += bcolors.ENDC
 
             string += "\n    Loops:\n" + bcolors.GREEN
@@ -88,7 +90,18 @@ class Analyzer:
                 string += "    " + str(loop) + "\n"
             string += bcolors.ENDC
 
-        string += "\n    Vars:\n" + str(self.names)
+            string += "\n    Definitions:\n" + bcolors.GREEN
+            for key, value in self.definitions[function].items():
+                string += "    " + str(key) + ":" + str(value) + "\n"
+            string += bcolors.ENDC
+
+            string += "\n    Reachability:\n" + bcolors.GREEN
+            for key, value in self.reachability[function].items():
+                string += "    " + str(key) + ":" + str(value) + "\n"
+            string += bcolors.ENDC
+
+        string += "\n    Vars:\n"
+        string += "    " + str(self.names)
 
         return string
 
@@ -100,7 +113,7 @@ class Analyzer:
             if not line.startswith("("):
                 function = next(function_iter)
                 continue
-            edge = re.findall("\d+", line)
+            edge = list(map(int, re.findall("\d+", line)))
             self.cfg[function][edge[0]]["Dom"] = edge[1]
 
     def identify_loops(self):
@@ -136,14 +149,12 @@ class Analyzer:
                             loop.append(pred)
                             stack.append(pred)
                 loop.sort(reverse=True)
-                self.loops[function].append(loop)
-            self.loops[function].sort(key=lambda loop: len(loop))
+                self.loops[function].append({"Blocks": loop})
+            self.loops[function].sort(key=lambda loop: len(loop["Blocks"]))
 
     def expand_line(self, function, statement):
-        #expand all basic block references
         def repl(matchobj):
-            return self.cfg[function][matchobj[1]][matchobj[2]]
-        #delete parentheses
+            return self.cfg[function][int(matchobj[1])][int(matchobj[2])]
         statement = re.sub("\(.*?\)", "", statement)
         prev = statement
         statement = re.sub("\[B(\d+)\.(\d+)\]", repl, prev)
@@ -154,64 +165,115 @@ class Analyzer:
         self.function = None
         return statement
 
+    ASSIGNMENT_OPS = ["+=", "-=", "=", "++", "--"]
+
     def initialize_sets(self):
         #calculate MAYGEN, DOESGEN for each basic block
         for function in self.functions:
             for block, lines in self.cfg[function].items():
-                lines['DOESGEN'] = []
-                lines['MAYGEN'] = []
-                lines['KILL'] = []
-                for line, statement in lines.items():
-                    if bool(re.match("\d+", line)):
-                        for assignment in [" = ", "+=", "-=", "++", "--"]:
-                            if assignment in statement:
-                                stmt = self.expand_line(function, statement)
-                                var = stmt.partition(assignment)[0]
-                                definition_count = self.definitions[function]["Count"]
-                                lines['DOESGEN'].append(var)
-                                lines['MAYGEN'].append(definition_count)
+                self.reachability[function][block] = {
+                    'DOESGEN': [],
+                    'MAYGEN': [],
+                    'KILL': []
+                }
+                reach_block = self.reachability[function][block]
+                cfg_block = self.cfg[function][block]
+                reach_block['Preds'] = cfg_block['Preds'] if 'Preds' in cfg_block else []
+                reach_block['Succs'] = cfg_block['Succs'] if 'Succs' in cfg_block else []
 
-                                self.definitions[function][definition_count] = { 'Def': stmt, 'Var': var }
-                                self.definitions[function]["Count"] = definition_count + 1
+                #for each statement in block, check if assignment occurs
+                for key in list(filter(lambda line: isinstance(line, int), lines.keys())):
+                    statement = lines[key]
+                    if "==" in statement: continue
+                    for assignment in self.ASSIGNMENT_OPS:
+                        if assignment in statement:
+                            #expand all block references
+                            stmt = self.expand_line(function, statement)
+                            var = stmt.partition(assignment)[0]
 
-                                for index, variable in self.definitions[function].items():
-                                    if variable == var:
-                                        if index in lines['MAYGEN']:
-                                            lines['MAYGEN'].remove(index)
-                                            lines['DOESGEN'].remove(var)
-                                        else:
-                                            lines['KILL'].append(index)
+                            definition_count = self.definitions[function]["Count"]
+                            reach_block['DOESGEN'].append(var)
+                            reach_block['MAYGEN'].append(definition_count)
+
+                            #check if this block kills any definitions
+                            keys = list(self.definitions[function].keys())
+                            keys.remove('Count')
+                            keys.reverse()
+                            for key in keys:
+                                if self.definitions[function][key]['Var'] == var:
+                                    #killing definitions in the same block needs to be handled differently
+                                    if key in reach_block['MAYGEN']:
+                                        reach_block['DOESGEN'].remove(var)
+                                        reach_block['MAYGEN'].remove(key)
+                                    else:
+                                        reach_block['KILL'].append(key)
+                                    break
+
+                            #update definitions object
+                            self.definitions[function][definition_count] = { 'Def': stmt, 'Var': var }
+                            self.definitions[function]["Count"] = definition_count + 1
+                            break
 
     def calculate_loops(self):
         #inner loops: calculate Min, Mout, Uin, Uout
         for function in self.functions:
             for loop in self.loops[function]:
-                header = self.cfg[function][loop[0]]
+                header = self.reachability[function][loop["Blocks"][0]]
                 header["Mout"] = header["MAYGEN"]
                 header["Uout"] = header["DOESGEN"]
-                for block in loop[1:]:
-                    cur_block = self.cfg[function][block]
+
+                for block in loop["Blocks"][1:]:
+                    cfg_block = self.cfg[function][block]
+                    reach_block = self.reachability[function][block]
                     MoutPred = []
                     UoutPred = []
-                    for pred in cur_block["Preds"]:
-                        MoutPred += self.cfg[function][pred]["Mout"]
-                        UoutPred.append(self.cfg[function][pred]["Uout"])
+                    for pred in cfg_block["Preds"]:
+                        MoutPred += self.reachability[function][pred]["Mout"]
+                        UoutPred.append(self.reachability[function][pred]["Uout"])
 
+                    #Min = union MoutPred
                     Min = MoutPred
-                    cur_block["Min"] = Min
+                    reach_block["Min"] = Min
 
+                    #Uin = intersection UoutPred
                     Uin = list(set.intersection(*map(set, UoutPred))) if len(UoutPred) > 0 else []
-                    cur_block["Uin"] = Uin
+                    reach_block["Uin"] = Uin
 
-                    for kill in cur_block['KILL']:
-                        Min.remove(kill)
+                    #Mout = (Min - KILL) union MAYGEN
+                    for kill in reach_block['KILL']:
+                        if kill in Min: Min.remove(kill)
+                    reach_block["Mout"] = reach_block["MAYGEN"] + Min
 
-                    cur_block["Mout"] = cur_block["MAYGEN"] + Min
-                    cur_block["Uout"] = cur_block["DOESGEN"] + Uin
+                    #Uout = Uin union DOESGEN
+                    reach_block["Uout"] = reach_block["DOESGEN"] + Uin
+
+    def determine_loop_indices(self):
+        for function in self.functions:
+            for loop in self.loops[function]:
+                init = self.reachability[function][loop["Blocks"][0] + 1]
+                cond = self.reachability[function][loop["Blocks"][0]]
+                update = self.reachability[function][loop["Blocks"][-1]]
+                definition = self.definitions[function][update['MAYGEN'][0]]
+                begin = 0
+                end = 0
+                step = 0
+                for assignment in self.ASSIGNMENT_OPS:
+                    if assignment in definition['Def']:
+                        var, _, val = definition['Def'].partition(assignment)
+                        if assignment == "+=":
+                            step = int(val)
+                        elif assignment == "-=":
+                            step = -int(val)
+                        elif assignment == "++":
+                            step = 1
+                        elif assignemnt == "--":
+                            step = -1
+                        break
 
     def calculate_reachability(self):
         self.initialize_sets()
         self.calculate_loops()
+        self.determine_loop_indices()
 
 if __name__ == "__main__":
     #validate command line input
