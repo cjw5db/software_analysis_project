@@ -25,6 +25,8 @@ class Analyzer:
         self.back_edges = {}
         self.loops = {}
         self.definitions = {}
+        self.variables = {}
+        self.count = {}
         self.reachability = {}
         self.names = name_str.splitlines()
         function = ""
@@ -53,7 +55,9 @@ class Analyzer:
                 self.cfg[function] = {}
                 self.back_edges[function] = {}
                 self.loops[function] = []
-                self.definitions[function] = { 'Count': 0 }
+                self.definitions[function] = {}
+                self.variables[function] = {}
+                self.count[function] = 0
                 self.functions.append(function)
                 self.reachability[function] = {}
         for function, blocks in self.cfg.items():
@@ -84,28 +88,71 @@ class Analyzer:
                     string += ("    " + lines + "\n")
                 string += bcolors.ENDC
 
-            string += "\n    Back Edges:\n" + bcolors.GREEN
+            string += "\nBack Edges:\n" + bcolors.GREEN
             for key, value in self.back_edges[function].items():
                 string += "    " + str(key) + ":" + str(value) + "\n"
             string += bcolors.ENDC
 
-            string += "\n    Loops:\n" + bcolors.GREEN
+            string += "\nLoops:\n" + bcolors.GREEN
             for loop in self.loops[function]:
                 string += "    " + str(loop) + "\n"
             string += bcolors.ENDC
 
-            string += "\n    Definitions:\n" + bcolors.GREEN
-            for key, value in self.definitions[function].items():
-                string += "    " + str(key) + ":" + str(value) + "\n"
-            string += bcolors.ENDC
+            string += "\nDefinitions:\n"
+            for definition, lines in self.definitions[function].items():
+                string += bcolors.YELLOW + "  " + str(definition) + "\n" + bcolors.ENDC
+                if isinstance(lines, list):
+                    for item in lines:
+                        string += ("    " + str(item) + "\n")
+                elif isinstance(lines, dict):
+                    for key, value in lines.items():
+                        if key == "Def":
+                            string += bcolors.RED
+                        elif key == "Var":
+                            string += bcolors.CYAN
+                        string += ("    " + str(key) + ":" + str(value) + "\n")
+                        string += bcolors.ENDC
+                else:
+                    string += ("    " + str(lines) + "\n")
+                string += bcolors.ENDC
 
-            string += "\n    Reachability:\n" + bcolors.GREEN
-            for key, value in self.reachability[function].items():
-                string += "    " + str(key) + ":" + str(value) + "\n"
-            string += bcolors.ENDC
+            string += "\nVariables:\n"
+            for variable, lines in self.variables[function].items():
+                string += bcolors.YELLOW + "  " + str(variable) + "\n" + bcolors.ENDC
+                if isinstance(lines, list):
+                    for item in lines:
+                        string += ("    " + str(item) + "\n")
+                elif isinstance(lines, dict):
+                    for key, value in lines.items():
+                        if key == "Def":
+                            string += bcolors.RED
+                        elif key == "Var":
+                            string += bcolors.CYAN
+                        string += ("    " + str(key) + ":" + str(value) + "\n")
+                        string += bcolors.ENDC
+                else:
+                    string += ("    " + str(lines) + "\n")
+                string += bcolors.ENDC
 
-        string += "\n    Vars:\n"
-        string += "    " + str(self.names)
+            string += "\nReachability:\n"
+            for block, lines in self.reachability[function].items():
+                string += bcolors.YELLOW + "  " + str(block) + "\n" + bcolors.ENDC
+                if isinstance(lines, list):
+                    for item in lines:
+                        string += ("    " + str(item) + "\n")
+                elif isinstance(lines, dict):
+                    for key, value in lines.items():
+                        if key in ["MAYGEN", "DOESGEN", "KILL"]:
+                            string += bcolors.RED
+                        elif key in ["Preds", "Succs"]:
+                            string += bcolors.PURPLE
+                        elif key in ["Min", "Mout", "Uin", "Uout"]:
+                            string += bcolors.CYAN
+                        string += ("    " + str(key) + ":" + str(value) + "\n")
+                        string += bcolors.ENDC
+                else:
+                    string += ("    " + lines + "\n")
+                string += bcolors.ENDC
 
         return string
 
@@ -183,39 +230,81 @@ class Analyzer:
                 reach_block['Preds'] = cfg_block['Preds'] if 'Preds' in cfg_block else []
                 reach_block['Succs'] = cfg_block['Succs'] if 'Succs' in cfg_block else []
 
+                stmt_lines = list(filter(lambda line: isinstance(line, int), lines.keys()))
                 #for each statement in block, check if assignment occurs
-                for key in list(filter(lambda line: isinstance(line, int), lines.keys())):
+                for key in stmt_lines:
                     statement = lines[key]
-                    if any(comparison in self.COMPARE_OPS + ["=="] for comparison in statement): continue
-                    for assignment in self.ASSIGNMENT_OPS:
-                        if assignment in statement:
-                            #expand all block references
-                            stmt = self.expand_line(function, statement)
-                            stmt = stmt.replace(" ", "")
-                            var = stmt.partition(assignment)[0]
+                    stmt = None
+                    var = None
+                    klee_assume = False
+                    array = False
+                    index = None
+                    indices = None
+                    if "klee_assume" in statement:
+                        klee_assume = True
+                        definition = re.search("\((.*?)\)", lines[max(stmt_lines)])
+                        stmt = self.expand_line(function, definition[1])
+                        stmt = stmt.replace(" ", "")
+                        for comparison in self.COMPARE_OPS + ["=="]:
+                            if comparison in stmt:
+                                var = stmt.partition(comparison)[0]
+                                break
+                    else:
+                        if any(comparison in self.COMPARE_OPS + ["=="] for comparison in statement):
+                            continue
+                        for assignment in self.ASSIGNMENT_OPS:
+                            if assignment in statement:
+                                #expand all block references
+                                stmt = self.expand_line(function, statement)
+                                stmt = stmt.replace(" ", "")
+                                var = stmt.partition(assignment)[0]
+                                break
 
-                            definition_count = self.definitions[function]["Count"]
-                            reach_block['DOESGEN'].append(var)
-                            reach_block['MAYGEN'].append(definition_count)
+                    if stmt == None or var == None: continue
 
-                            #check if this block kills any definitions
-                            keys = list(self.definitions[function].keys())
-                            keys.remove('Count')
-                            keys.reverse()
-                            for key in keys:
-                                if self.definitions[function][key]['Var'] == var:
-                                    #killing definitions in the same block needs to be handled differently
-                                    if key in reach_block['MAYGEN']:
-                                        reach_block['DOESGEN'].remove(var)
-                                        reach_block['MAYGEN'].remove(key)
-                                    else:
-                                        reach_block['KILL'].append(key)
-                                    break
+                    #check if array
+                    array_match = re.match("(.*?)\[(.*?)\]", var)
+                    if array_match != None:
+                        array = True
+                        var = array_match[1]
+                        index = array_match[2]
+                        if bool(re.match("\d+", index)):
+                            indices = [int(index)]
 
-                            #update definitions object
-                            self.definitions[function][definition_count] = { 'Def': stmt, 'Var': var }
-                            self.definitions[function]["Count"] = definition_count + 1
+                    reach_block['DOESGEN'].append(self.count[function])
+                    reach_block['MAYGEN'].append(self.count[function])
+
+                    #check if this block kills any definitions
+                    keys = list(self.definitions[function].keys())
+                    keys.reverse()
+
+                    for key in keys:
+                        if self.definitions[function][key]['Var'] == var:
+                            #killing definitions in the same block needs to be handled differently
+                            if key in reach_block['MAYGEN']:
+                                reach_block['DOESGEN'].remove(key)
+                                reach_block['MAYGEN'].remove(key)
+                            else:
+                                reach_block['KILL'].append(key)
                             break
+
+                    #update variables object
+                    self.variables[function][self.count[function]] = {
+                        'Var': var,
+                        "Array": array,
+                        "Index": index,
+                        "Indices": indices
+                    }
+
+                    #update definitions object
+                    self.definitions[function][self.count[function]] = {
+                        'Def': stmt,
+                        'Var': var,
+                        "KleeAssume": klee_assume,
+                        "Array": array,
+                        "Index": index
+                    }
+                    self.count[function] += 1
 
     def calculate_reachability(self, function, block):
         reach_block = self.reachability[function][block]
@@ -239,16 +328,15 @@ class Analyzer:
             #Mout = (Min - KILL) union MAYGEN
             for kill in reach_block['KILL']:
                 if kill in Min: Min.remove(kill)
-            reach_block["Mout"] = reach_block["MAYGEN"] + Min
+            reach_block["Mout"] = reach_block["MAYGEN"].copy() + Min
 
             #Uout = Uin union DOESGEN
-            reach_block["Uout"] = reach_block["DOESGEN"]
+            reach_block["Uout"] = reach_block["DOESGEN"].copy()
             for uin in Uin:
                 if uin not in reach_block["Uout"]: reach_block["Uout"].append(uin)
         else:
-            reach_block["Mout"] = reach_block["MAYGEN"]
-            reach_block["Uout"] = reach_block["DOESGEN"]
-
+            reach_block["Mout"] = reach_block["MAYGEN"].copy()
+            reach_block["Uout"] = reach_block["DOESGEN"].copy()
 
     def calculate_loops(self):
         #inner loops: calculate Min, Mout, Uin, Uout
@@ -323,10 +411,13 @@ class Analyzer:
                 loop_block["DOESGEN"] = exit_block["Uout"]
                 loop_block["MAYGEN"] = exit_block["Mout"]
 
-                for statement in loop_block["DOESGEN"]:
-                    if bool(re.search("\[" + loop["Var"] + "\]", statement)):
-                        loop_block["LoopRange"] = loop["Range"]
-                        loop_block["LoopVar"] = loop["Var"]
+                for variable in loop_block["DOESGEN"]:
+                    loop_var = self.variables[function][variable]
+                    if loop_var["Array"] == True:
+                        if loop_var["Index"] == loop["Var"]:
+                            loop_var["Indices"] = list(loop["Range"])
+                        elif isinstance(loop_var["Index"], int):
+                            loop_var["Indices"] = [int(loop_var["Index"])]
 
                 loop_block["Preds"] = header_block["Preds"]
                 loop_block["Succs"] = header_block["Succs"]
@@ -346,11 +437,12 @@ class Analyzer:
                     if definition not in gen_defs:
                         loop_block["KILL"].append(definition)
 
+                #update Succs and Preds to remove loop
                 for block, lines in self.reachability[function].items():
-                    for line, statement in lines.items():
-                        if isinstance(statement, list) and header in statement:
-                            statement.remove(header)
-                            statement.append(block_counter)
+                    for key, value in lines.items():
+                        if key in ["Succs", "Preds"] and header in value:
+                            value.remove(header)
+                            value.append(block_counter)
                 block_counter += 1
 
     def calculate_flat(self):
@@ -358,11 +450,23 @@ class Analyzer:
             entry = list(self.reachability[function].keys())[0]
             q = queue.Queue(len(self.reachability[function].keys()))
             q.put(entry)
+            seen = set()
             while not q.empty():
                 block = q.get()
+                if "Preds" in self.reachability[function][block]:
+                    ready = True
+                    for pred in self.reachability[function][block]["Preds"]:
+                        if pred not in seen:
+                            q.put(block)
+                            ready = False
+                            break
+                    if not ready:
+                        continue
                 self.calculate_reachability(function, block)
+                seen.add(block)
                 for succs in self.reachability[function][block]["Succs"]:
-                    q.put(succs)
+                    if succs not in seen:
+                        q.put(succs)
 
     def reachability_analysis(self):
         self.initialize_sets()
@@ -407,6 +511,7 @@ if __name__ == "__main__":
     cfg.add_dominance_edges(dom_str)
     cfg.identify_loops()
 
+    #perform reachability analysis
     cfg.reachability_analysis()
 
     #debug print CFG
