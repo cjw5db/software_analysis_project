@@ -2,6 +2,7 @@ import sys
 import subprocess
 import re
 import os
+import queue
 
 class bcolors:
     PURPLE = '\033[95m'
@@ -15,6 +16,9 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 class Analyzer:
+    ASSIGNMENT_OPS = ["+=", "-=", "=", "++", "--"]
+    COMPARE_OPS = ["<=", ">=", "<", ">"]
+
     def __init__(self, cfg_str, name_str):
         self.functions = []
         self.cfg = {}
@@ -165,8 +169,6 @@ class Analyzer:
         self.function = None
         return statement
 
-    ASSIGNMENT_OPS = ["+=", "-=", "=", "++", "--"]
-
     def initialize_sets(self):
         #calculate MAYGEN, DOESGEN for each basic block
         for function in self.functions:
@@ -184,11 +186,12 @@ class Analyzer:
                 #for each statement in block, check if assignment occurs
                 for key in list(filter(lambda line: isinstance(line, int), lines.keys())):
                     statement = lines[key]
-                    if "==" in statement: continue
+                    if any(comparison in self.COMPARE_OPS + ["=="] for comparison in statement): continue
                     for assignment in self.ASSIGNMENT_OPS:
                         if assignment in statement:
                             #expand all block references
                             stmt = self.expand_line(function, statement)
+                            stmt = stmt.replace(" ", "")
                             var = stmt.partition(assignment)[0]
 
                             definition_count = self.definitions[function]["Count"]
@@ -214,6 +217,39 @@ class Analyzer:
                             self.definitions[function]["Count"] = definition_count + 1
                             break
 
+    def calculate_reachability(self, function, block):
+        reach_block = self.reachability[function][block]
+
+        if "Preds" in reach_block:
+            MoutPred = []
+            UoutPred = []
+            for pred in reach_block["Preds"]:
+                for mout in self.reachability[function][pred]["Mout"]:
+                    if mout not in MoutPred: MoutPred.append(mout)
+                UoutPred.append(self.reachability[function][pred]["Uout"])
+
+            #Min = union MoutPred
+            Min = MoutPred
+            reach_block["Min"] = Min
+
+            #Uin = intersection UoutPred
+            Uin = list(set.intersection(*map(set, UoutPred))) if len(UoutPred) > 0 else []
+            reach_block["Uin"] = Uin
+
+            #Mout = (Min - KILL) union MAYGEN
+            for kill in reach_block['KILL']:
+                if kill in Min: Min.remove(kill)
+            reach_block["Mout"] = reach_block["MAYGEN"] + Min
+
+            #Uout = Uin union DOESGEN
+            reach_block["Uout"] = reach_block["DOESGEN"]
+            for uin in Uin:
+                if uin not in reach_block["Uout"]: reach_block["Uout"].append(uin)
+        else:
+            reach_block["Mout"] = reach_block["MAYGEN"]
+            reach_block["Uout"] = reach_block["DOESGEN"]
+
+
     def calculate_loops(self):
         #inner loops: calculate Min, Mout, Uin, Uout
         for function in self.functions:
@@ -223,57 +259,117 @@ class Analyzer:
                 header["Uout"] = header["DOESGEN"]
 
                 for block in loop["Blocks"][1:]:
-                    cfg_block = self.cfg[function][block]
-                    reach_block = self.reachability[function][block]
-                    MoutPred = []
-                    UoutPred = []
-                    for pred in cfg_block["Preds"]:
-                        MoutPred += self.reachability[function][pred]["Mout"]
-                        UoutPred.append(self.reachability[function][pred]["Uout"])
-
-                    #Min = union MoutPred
-                    Min = MoutPred
-                    reach_block["Min"] = Min
-
-                    #Uin = intersection UoutPred
-                    Uin = list(set.intersection(*map(set, UoutPred))) if len(UoutPred) > 0 else []
-                    reach_block["Uin"] = Uin
-
-                    #Mout = (Min - KILL) union MAYGEN
-                    for kill in reach_block['KILL']:
-                        if kill in Min: Min.remove(kill)
-                    reach_block["Mout"] = reach_block["MAYGEN"] + Min
-
-                    #Uout = Uin union DOESGEN
-                    reach_block["Uout"] = reach_block["DOESGEN"] + Uin
+                    self.calculate_reachability(function, block)
 
     def determine_loop_indices(self):
         for function in self.functions:
             for loop in self.loops[function]:
-                init = self.reachability[function][loop["Blocks"][0] + 1]
-                cond = self.reachability[function][loop["Blocks"][0]]
                 update = self.reachability[function][loop["Blocks"][-1]]
                 definition = self.definitions[function][update['MAYGEN'][0]]
-                begin = 0
-                end = 0
-                step = 0
+
                 for assignment in self.ASSIGNMENT_OPS:
                     if assignment in definition['Def']:
                         var, _, val = definition['Def'].partition(assignment)
+                        loop["Var"] = var
                         if assignment == "+=":
-                            step = int(val)
+                            loop["Step"] = int(val)
                         elif assignment == "-=":
-                            step = -int(val)
+                            loop["Step"] = -int(val)
                         elif assignment == "++":
-                            step = 1
-                        elif assignemnt == "--":
-                            step = -1
+                            loop["Step"] = 1
+                        elif assignment == "--":
+                            loop["Step"] = -1
                         break
 
-    def calculate_reachability(self):
+                condition = self.cfg[function][loop["Blocks"][0]]
+                for key, statement in condition.items():
+                    if not isinstance(key, int): continue
+                    for comparison in self.COMPARE_OPS:
+                        if comparison in statement:
+                            stmt = self.expand_line(function, statement)
+                            bound = int(stmt.partition(comparison)[2])
+                            if comparison == "<=":
+                                loop["End"] = bound + 1
+                            elif comparison == "<":
+                                loop["End"] = bound
+                            elif comparison == ">=":
+                                loop["End"] = bound - 1
+                            elif comparison == ">":
+                                loop["End"] = bound
+                            break
+                        if "End" in loop: break
+
+                init = self.reachability[function][loop["Blocks"][0] + 1]
+                for maygen in init['MAYGEN']:
+                    definition = self.definitions[function][maygen]
+                    if loop['Var'] in definition["Def"]:
+                        loop["Start"] = int(definition["Def"].partition("=")[2])
+
+                loop["Range"] = range(loop["Start"], loop["End"], loop["Step"])
+
+    # header is the only way in or out of the loop
+    def replace_loops(self):
+        for function in self.functions:
+            block_counter = max(list(filter(lambda block: isinstance(block, int), self.reachability[function].keys()))) + 1
+            for loop in self.loops[function]:
+                header = loop["Blocks"][0]
+                header_block = self.reachability[function][header]
+                exit = loop["Blocks"][-1]
+                exit_block = self.reachability[function][exit]
+
+                loop["Summary"] = block_counter
+                self.reachability[function][block_counter] = {}
+                loop_block = self.reachability[function][block_counter]
+                loop_block["DOESGEN"] = exit_block["Uout"]
+                loop_block["MAYGEN"] = exit_block["Mout"]
+
+                for statement in loop_block["DOESGEN"]:
+                    if bool(re.search("\[" + loop["Var"] + "\]", statement)):
+                        loop_block["LoopRange"] = loop["Range"]
+                        loop_block["LoopVar"] = loop["Var"]
+
+                loop_block["Preds"] = header_block["Preds"]
+                loop_block["Succs"] = header_block["Succs"]
+                killed_defs = []
+                gen_defs = []
+                for block in loop["Blocks"]:
+                    if block in loop_block["Preds"]:
+                        loop_block["Preds"].remove(block)
+                    if block in loop_block["Succs"]:
+                        loop_block["Succs"].remove(block)
+
+                    killed_defs += self.reachability[function][block]["KILL"]
+                    gen_defs += self.reachability[function][block]["MAYGEN"]
+
+                loop_block["KILL"] = []
+                for definition in killed_defs:
+                    if definition not in gen_defs:
+                        loop_block["KILL"].append(definition)
+
+                for block, lines in self.reachability[function].items():
+                    for line, statement in lines.items():
+                        if isinstance(statement, list) and header in statement:
+                            statement.remove(header)
+                            statement.append(block_counter)
+                block_counter += 1
+
+    def calculate_flat(self):
+        for function in self.functions:
+            entry = list(self.reachability[function].keys())[0]
+            q = queue.Queue(len(self.reachability[function].keys()))
+            q.put(entry)
+            while not q.empty():
+                block = q.get()
+                self.calculate_reachability(function, block)
+                for succs in self.reachability[function][block]["Succs"]:
+                    q.put(succs)
+
+    def reachability_analysis(self):
         self.initialize_sets()
         self.calculate_loops()
         self.determine_loop_indices()
+        self.replace_loops()
+        self.calculate_flat()
 
 if __name__ == "__main__":
     #validate command line input
@@ -311,8 +407,7 @@ if __name__ == "__main__":
     cfg.add_dominance_edges(dom_str)
     cfg.identify_loops()
 
-    #perform reachability analysis
-    cfg.calculate_reachability()
+    cfg.reachability_analysis()
 
     #debug print CFG
     print(cfg)
