@@ -247,8 +247,8 @@ class Analyzer:
                 }
                 reach_block = self.reachability[function][block]
                 cfg_block = self.cfg[function][block]
-                reach_block['Preds'] = cfg_block['Preds'] if 'Preds' in cfg_block else []
-                reach_block['Succs'] = cfg_block['Succs'] if 'Succs' in cfg_block else []
+                reach_block['Preds'] = cfg_block['Preds'].copy() if 'Preds' in cfg_block else []
+                reach_block['Succs'] = cfg_block['Succs'].copy() if 'Succs' in cfg_block else []
 
                 stmt_lines = list(filter(lambda line: isinstance(line, int), lines.keys()))
                 klee_assume_seen = False
@@ -523,7 +523,7 @@ class Analyzer:
                         if loop_def["Index"] == loop["Var"]:
                             loop_def["Indices"] = list(loop["Range"])
                         elif isinstance(loop_def["Index"], int):
-                            loop_def["Indices"] = [int(loop_var["Index"])]
+                            loop_def["Indices"] = [int(loop_def["Index"])]
 
                 loop_block["CONDITIONAL"] = False
 
@@ -662,12 +662,11 @@ class Analyzer:
                             if index not in necessary:
                                 definition["Unnecessary"].append(index)
                         string += "\nklee_assume(" + definition["Def"] + "):\n"
+                        percent_unnecessary = round(len(definition["Unnecessary"]) / len(all), 4) * 100
+                        string += "\tPercent Unnecessary: " + str(percent_unnecessary) + "%\n"
                         if verbose:
                             string += "\tUnnecessary Indices:" + str(definition["Unnecessary"]) + "\n"
                             string += "\tNecessary Indices:" + str(necessary) + "\n"
-                        else:
-                            percent_unnecessary = round(len(definition["Unnecessary"]) / len(all), 4) * 100
-                            string += "\tPercent Unnecessary: " + str(percent_unnecessary) + "%\n"
                     else:
                         string += "\nklee_assume(" + definition["Def"] + "):\n"
                         string += "\tNecessary: " + str(necessary) + "\n"
