@@ -1,19 +1,22 @@
 #include <klee/klee.h>
-#include <stdint.h>
-#include <stdio.h>
-#define LEN 10000
+#define LEN 10
 #define RES 16
 
-int main(){
-  int a;
-  uint8_t arr[LEN];
-  klee_make_symbolic(&arr, sizeof(arr), "Array");
+int arr[LEN];
 
-  for(int i = 0; i < LEN; i++){
+int main(){
+  klee_make_symbolic(&arr, sizeof(arr), "Array");
+  int i, j;
+
+  for(i = 0; i < LEN; i += 1){
     klee_assume(arr[i] > 0);
   }
 
-  if(arr[0] == RES){
+  for(j = 0; j < LEN; j++){
+    arr[j] = 0;
+  }
+
+  if(arr[0] > 0){
     return 1;
   }
 
