@@ -252,6 +252,7 @@ class Analyzer:
                 reach_block['Succs'] = cfg_block['Succs'] if 'Succs' in cfg_block else []
 
                 stmt_lines = list(filter(lambda line: isinstance(line, int), lines.keys()))
+                klee_assume_seen = False
                 #for each statement in block, check if assignment occurs
                 for key in stmt_lines:
                     statement = lines[key]
@@ -261,17 +262,21 @@ class Analyzer:
                     array = False
                     index = None
                     indices = []
-                    if "klee_assume" in statement:
-                        klee_assume = True
-                        definition = re.search("\((.*?)\)", lines[max(stmt_lines)])
-                        stmt = self.expand_line(function, definition[1])
-                        stmt = stmt.replace(" ", "")
-                        for comparison in self.COMPARE_OPS:
-                            if comparison in stmt:
-                                var = stmt.partition(comparison)[0]
-                                break
-                    else:
 
+                    if klee_assume_seen == True:
+                        for comparison in self.COMPARE_OPS:
+                            if comparison in statement:
+                                stmt = self.expand_line(function, statement)
+                                stmt = stmt.replace(" ", "")
+                                var = stmt.partition(comparison)[0]
+                                klee_assume_seen = False
+                                klee_assume = True
+                        if klee_assume == False:
+                            continue
+                    elif "klee_assume" in statement:
+                        klee_assume_seen = True
+                        continue
+                    else:
                         is_comparison = False
                         for comparison in self.COMPARE_OPS:
                             if comparison in statement:
