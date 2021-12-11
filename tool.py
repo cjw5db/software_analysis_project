@@ -28,6 +28,7 @@ class Analyzer:
         self.variables = {}
         self.count = {}
         self.reachability = {}
+        self.conditionals = {}
         self.names = name_str.splitlines()
         function = ""
         block = ""
@@ -60,6 +61,7 @@ class Analyzer:
                 self.count[function] = 0
                 self.functions.append(function)
                 self.reachability[function] = {}
+                self.conditionals[function] = {}
         for function, blocks in self.cfg.items():
             self.cfg[function] = dict(sorted(blocks.items(), key=lambda kv: kv[0], reverse=True))
 
@@ -133,6 +135,25 @@ class Analyzer:
                 else:
                     string += ("    " + str(lines) + "\n")
                 string += bcolors.ENDC
+
+            string += "\nConditionals:\n"
+            for conditional, lines in self.conditionals[function].items():
+                string += bcolors.YELLOW + "  " + str(conditional) + "\n" + bcolors.ENDC
+                if isinstance(lines, list):
+                    for item in lines:
+                        string += ("    " + str(item) + "\n")
+                elif isinstance(lines, dict):
+                    for key, value in lines.items():
+                        if key == "Def":
+                            string += bcolors.RED
+                        elif key == "Var":
+                            string += bcolors.CYAN
+                        string += ("    " + str(key) + ":" + str(value) + "\n")
+                        string += bcolors.ENDC
+                else:
+                    string += ("    " + str(lines) + "\n")
+                string += bcolors.ENDC
+
 
             string += "\nReachability:\n"
             for block, lines in self.reachability[function].items():
@@ -222,7 +243,8 @@ class Analyzer:
             for block, lines in self.cfg[function].items():
                 self.reachability[function][block] = {
                     'DOESGEN': [],
-                    'MAYGEN': []
+                    'MAYGEN': [],
+                    'CONDITIONAL': False
                 }
                 reach_block = self.reachability[function][block]
                 cfg_block = self.cfg[function][block]
@@ -249,8 +271,35 @@ class Analyzer:
                                 var = stmt.partition(comparison)[0]
                                 break
                     else:
-                        if any(comparison in statement for comparison in self.COMPARE_OPS):
+
+                        is_comparison = False
+                        for comparison in self.COMPARE_OPS:
+                            if comparison in statement:
+                                is_comparison = True
+                                stmt = self.expand_line(function, statement)
+                                stmt = stmt.replace(" ", "")
+                                var = stmt.partition(comparison)[0]
+                                #check if array
+                                array_match = re.match("(.*?)\[(.*?)\]", var)
+                                if array_match != None:
+                                    array = True
+                                    var = array_match[1]
+                                    index = array_match[2]
+                                    if bool(re.match("\d+", index)):
+                                        index = int(index)
+                                        indices = [index]
+                                self.conditionals[function][block] = [{
+                                    'Def': stmt,
+                                    'Var': var,
+                                    "Array": array,
+                                    "Index": index,
+                                    "Indices": indices
+                                }]
+                                reach_block["CONDITIONAL"] = True
+                                break
+                        if is_comparison == True:
                             continue
+
                         for assignment in self.ASSIGNMENT_OPS:
                             if assignment in statement:
                                 #expand all block references
@@ -453,6 +502,8 @@ class Analyzer:
                         elif isinstance(loop_def["Index"], int):
                             loop_def["Indices"] = [int(loop_var["Index"])]
 
+                loop_block["CONDITIONAL"] = False
+
                 loop_block["Preds"] = header_block["Preds"]
                 loop_block["Succs"] = header_block["Succs"]
                 gen_defs = []
@@ -461,14 +512,32 @@ class Analyzer:
                         loop_block["Preds"].remove(block)
                     if block in loop_block["Succs"]:
                         loop_block["Succs"].remove(block)
+
                     gen_defs += self.reachability[function][block]["MAYGEN"]
+
+                for block in loop["Blocks"][1:]:
+                    if self.reachability[function][block]["CONDITIONAL"] == True:
+                        if block_counter not in self.conditionals[function].keys():
+                            loop_block["CONDITIONAL"] = True
+                            self.conditionals[function][block_counter] = []
+                        for conditional in self.conditionals[function][block]:
+                            cp = conditional.copy()
+                            if conditional["Array"] == True:
+                                if conditional["Index"] == loop_def["Var"]:
+                                    cp["Indices"] = list(loop["Range"])
+                            self.conditionals[function][block_counter].append(cp)
+
 
                 #update Succs and Preds to remove loop
                 for block, lines in self.reachability[function].items():
+                    if block == block_counter:
+                        continue
                     for key, value in lines.items():
-                        if key in ["Succs", "Preds"] and header in value:
-                            value.remove(header)
-                            value.append(block_counter)
+                        if key in ["Succs", "Preds"]:
+                            for loop_block in loop["Blocks"]:
+                                if loop_block in value:
+                                    value.remove(loop_block)
+                                    value.append(block_counter)
                 block_counter += 1
 
     def calculate_flat(self):
@@ -486,7 +555,7 @@ class Analyzer:
                             q.put(block)
                             ready = False
                             break
-                    if not ready:
+                    if ready == False:
                         continue
                 self.calculate_reachability(function, block)
                 seen.add(block)
@@ -501,13 +570,86 @@ class Analyzer:
         self.replace_loops()
         self.calculate_flat()
 
+    def identify_unnecessary_klee_assume(self, verbose=False):
+        for function in self.functions:
+            for number, definition in self.definitions[function].items():
+                if definition["KleeAssume"] == True:
+                    entry = None
+                    variable = definition["Var"]
+                    indices = definition["Indices"].copy()
+                    necessary_indices = []
+                    for block, lines in self.reachability[function].items():
+                        if number in lines["DOESGEN"]:
+                            entry = block
+                    if entry == None:
+                        continue
+                    q = queue.Queue(len(self.reachability[function].keys()))
+                    q.put(entry)
+
+                    #identify reachable blocks, mark unreachable as seen
+                    visible = set()
+                    stack = [entry]
+                    while len(stack) > 0:
+                        block = stack.pop()
+                        if block not in visible:
+                            visible.add(block)
+                            if "Succs" in self.reachability[function][block]:
+                                for succ in self.reachability[function][block]["Succs"]:
+                                    stack.append(succ)
+
+                    seen = set(self.reachability[function].keys()).difference(visible)
+                    while not q.empty():
+                        block = q.get()
+                        reach_block = self.reachability[function][block]
+                        if "Preds" in reach_block:
+                            ready = True
+                            for pred in reach_block["Preds"]:
+                                if pred not in seen:
+                                    q.put(block)
+                                    ready = False
+                                    break
+                            if ready == False:
+                                continue
+                        if block in definition["Reachability"] and reach_block["CONDITIONAL"] == True:
+                            for condition_block in self.conditionals[function][block]:
+                                if condition_block["Var"] == variable:
+                                    for index in condition_block["Indices"]:
+                                        if index not in necessary_indices and index in definition["Reachability"][block]:
+                                            necessary_indices.append(index)
+                        seen.add(block)
+                        for succs in reach_block["Succs"]:
+                            if succs not in seen:
+                                q.put(succs)
+                    definition["UnnecessaryIndices"] = []
+                    for index in indices:
+                        if index not in necessary_indices:
+                            definition["UnnecessaryIndices"].append(index)
+                    string = "klee_assume(" + definition["Def"] + "):\n"
+                    if verbose:
+                        string += "\tUnnecessary Indices:" + str(definition["UnnecessaryIndices"])
+                    else:
+                        percent_unnecessary = round(len(definition["UnnecessaryIndices"]) / len(indices), 2)
+                        string += "\tPercent Unnecessary: {0:.0%}".format(percent_unnecessary)
+                    return string
+
 if __name__ == "__main__":
+    usage = "Usage:\n\tThis program takes in c files and outputs klee_assume calls that are unnecessary.\n"
+    usage += "\tCommand line arguments:\n\t\tc files\n\t\t--verbose to show all unused klee_assume array indices\n\t\t--help to show this message.\n"
+    usage += "\tConstraints:\n"
+    verbose = False
+
     #validate command line input
     if len(sys.argv) < 2:
         print("Command line arguments are required")
         exit()
     else:
         for arg in sys.argv[1:]:
+            if arg == "--help":
+                print(usage)
+                exit()
+            if arg == "--verbose":
+                verbose = True
+                continue
             if not arg.endswith(".c") and not arg.endswith(".cpp"):
                 print(arg + " is not a c or cpp file")
                 exit()
@@ -540,5 +682,10 @@ if __name__ == "__main__":
     #perform reachability analysis
     cfg.reachability_analysis()
 
-    #debug print CFG
-    print(cfg)
+    #identify unnecessary klee_assume statements
+    output = cfg.identify_unnecessary_klee_assume(verbose)
+
+    #output results
+    if verbose:
+        print(cfg)
+    print(output)
