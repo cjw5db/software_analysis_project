@@ -270,6 +270,7 @@ class Analyzer:
                                 var = stmt.partition(comparison)[0]
                                 klee_assume_seen = False
                                 klee_assume = True
+                                break
                         if klee_assume == False:
                             continue
                     elif "klee_assume" in statement:
@@ -409,9 +410,27 @@ class Analyzer:
                 if maygen not in reach_block["Mout"]: reach_block["Mout"].append(maygen)
 
             #Uout = Uin union DOESGEN
-            reach_block["Uout"] = reach_block["DOESGEN"].copy()
-            for uin in Uin:
-                if uin not in reach_block["Uout"]: reach_block["Uout"].append(uin)
+            reach_block["Uout"] = reach_block["Uin"].copy()
+            for doesgen in reach_block["DOESGEN"]:
+                doesgen_def = self.definitions[function][doesgen]
+                for uin in Uin:
+                    uin_definition = self.definitions[function][uin]
+                    if uin_definition["Var"] == doesgen_def["Var"]:
+                        if doesgen_def["Array"] == True:
+                            for index in doesgen_def["Indices"]:
+                                if index in uin_definition["Reachability"][block]:
+                                    uin_definition["Reachability"][block].remove(index)
+                            if len(uin_definition["Reachability"][block]) == 0:
+                                if uin in reach_block["Uout"]:
+                                    reach_block["Uout"].remove(uin)
+                                    break
+                        else:
+                            if uin in reach_block["Uout"]:
+                                reach_block["Uout"].remove(uin)
+                                break
+
+            for doesgen in reach_block["DOESGEN"]:
+                if doesgen not in reach_block["Uout"]: reach_block["Uout"].append(doesgen)
         else:
             reach_block["Mout"] = reach_block["MAYGEN"].copy()
             reach_block["Uout"] = reach_block["DOESGEN"].copy()
@@ -631,7 +650,7 @@ class Analyzer:
                                             if index not in necessary and index in definition["Reachability"][block]:
                                                 necessary.append(index)
                                     else:
-                                        if number in reach_block["Min"]:
+                                        if number in reach_block["Mout"]:
                                             necessary = True
                         seen.add(block)
                         for succs in reach_block["Succs"]:
@@ -670,7 +689,6 @@ if __name__ == "__main__":
     usage += "\t\t   Not allowed: arr[i + 3], arr[1 + 3], arr[i * j], etc.\n"
     usage += "\t\t3) Loops cannot contain return statements.  This makes it impossible to identify loops in the control flow graph.\n"
     usage += "\t\t4) Nested loops are not allowed.\n"
-    usage += "\t\t5) Analysis of scalars can create false-positives, but this is not the focus of the tool.\n"
 
     verbose = False
 
