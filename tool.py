@@ -17,7 +17,7 @@ class bcolors:
 
 class Analyzer:
     ASSIGNMENT_OPS = ["+=", "-=", "=", "++", "--"]
-    COMPARE_OPS = ["<=", ">=", "<", ">"]
+    COMPARE_OPS = ["<=", ">=", "==", "<", ">"]
 
     def __init__(self, cfg_str, name_str):
         self.functions = []
@@ -222,8 +222,7 @@ class Analyzer:
             for block, lines in self.cfg[function].items():
                 self.reachability[function][block] = {
                     'DOESGEN': [],
-                    'MAYGEN': [],
-                    'KILL': []
+                    'MAYGEN': []
                 }
                 reach_block = self.reachability[function][block]
                 cfg_block = self.cfg[function][block]
@@ -239,18 +238,18 @@ class Analyzer:
                     klee_assume = False
                     array = False
                     index = None
-                    indices = None
+                    indices = []
                     if "klee_assume" in statement:
                         klee_assume = True
                         definition = re.search("\((.*?)\)", lines[max(stmt_lines)])
                         stmt = self.expand_line(function, definition[1])
                         stmt = stmt.replace(" ", "")
-                        for comparison in self.COMPARE_OPS + ["=="]:
+                        for comparison in self.COMPARE_OPS:
                             if comparison in stmt:
                                 var = stmt.partition(comparison)[0]
                                 break
                     else:
-                        if any(comparison in self.COMPARE_OPS + ["=="] for comparison in statement):
+                        if any(comparison in statement for comparison in self.COMPARE_OPS):
                             continue
                         for assignment in self.ASSIGNMENT_OPS:
                             if assignment in statement:
@@ -269,7 +268,8 @@ class Analyzer:
                         var = array_match[1]
                         index = array_match[2]
                         if bool(re.match("\d+", index)):
-                            indices = [int(index)]
+                            index = int(index)
+                            indices = [index]
 
                     reach_block['DOESGEN'].append(self.count[function])
                     reach_block['MAYGEN'].append(self.count[function])
@@ -277,15 +277,12 @@ class Analyzer:
                     #check if this block kills any definitions
                     keys = list(self.definitions[function].keys())
                     keys.reverse()
-
                     for key in keys:
                         if self.definitions[function][key]['Var'] == var:
                             #killing definitions in the same block needs to be handled differently
                             if key in reach_block['MAYGEN']:
                                 reach_block['DOESGEN'].remove(key)
                                 reach_block['MAYGEN'].remove(key)
-                            else:
-                                reach_block['KILL'].append(key)
                             break
 
                     #update variables object
@@ -302,7 +299,9 @@ class Analyzer:
                         'Var': var,
                         "KleeAssume": klee_assume,
                         "Array": array,
-                        "Index": index
+                        "Index": index,
+                        "Indices": indices,
+                        "Reachability": {}
                     }
                     self.count[function] += 1
 
@@ -312,9 +311,17 @@ class Analyzer:
         if "Preds" in reach_block:
             MoutPred = []
             UoutPred = []
+
             for pred in reach_block["Preds"]:
                 for mout in self.reachability[function][pred]["Mout"]:
-                    if mout not in MoutPred: MoutPred.append(mout)
+                    mout_definition = self.definitions[function][mout]
+                    if mout not in MoutPred:
+                        if mout_definition["Array"] == True:
+                            if pred in mout_definition["Reachability"]:
+                                mout_definition["Reachability"][block] = mout_definition["Reachability"][pred].copy()
+                            else:
+                                mout_definition["Reachability"][block] = mout_definition["Indices"].copy()
+                        MoutPred.append(mout)
                 UoutPred.append(self.reachability[function][pred]["Uout"])
 
             #Min = union MoutPred
@@ -326,9 +333,27 @@ class Analyzer:
             reach_block["Uin"] = Uin
 
             #Mout = (Min - KILL) union MAYGEN
-            for kill in reach_block['KILL']:
-                if kill in Min: Min.remove(kill)
-            reach_block["Mout"] = reach_block["MAYGEN"].copy() + Min
+            reach_block["Mout"] = reach_block["Min"].copy()
+            for doesgen in reach_block["DOESGEN"]:
+                doesgen_var = self.variables[function][doesgen]
+                for min in Min:
+                    min_definition = self.definitions[function][min]
+                    if min_definition["Var"] == doesgen_var["Var"]:
+                        if doesgen_var["Array"] == True:
+                            for index in doesgen_var["Indices"]:
+                                if index in min_definition["Reachability"][block]:
+                                    min_definition["Reachability"][block].remove(index)
+                            if len(min_definition["Reachability"][block]) == 0:
+                                if doesgen in reach_block["Mout"]:
+                                    reach_block["Mout"].remove(doesgen)
+                                    break
+                        else:
+                            if doesgen in reach_block["Mout"]:
+                                reach_block["Mout"].remove(doesgen)
+                                break
+
+            for maygen in reach_block["MAYGEN"]:
+                if maygen not in reach_block["Mout"]: reach_block["Mout"].append(maygen)
 
             #Uout = Uin union DOESGEN
             reach_block["Uout"] = reach_block["DOESGEN"].copy()
@@ -408,8 +433,9 @@ class Analyzer:
                 loop["Summary"] = block_counter
                 self.reachability[function][block_counter] = {}
                 loop_block = self.reachability[function][block_counter]
-                loop_block["DOESGEN"] = exit_block["Uout"]
-                loop_block["MAYGEN"] = exit_block["Mout"]
+
+                loop_block["DOESGEN"] = exit_block["Uout"].copy()
+                loop_block["MAYGEN"] = exit_block["Mout"].copy()
 
                 for variable in loop_block["DOESGEN"]:
                     loop_var = self.variables[function][variable]
@@ -419,23 +445,23 @@ class Analyzer:
                         elif isinstance(loop_var["Index"], int):
                             loop_var["Indices"] = [int(loop_var["Index"])]
 
+                for definition in loop_block["MAYGEN"]:
+                    loop_def = self.definitions[function][definition]
+                    if loop_def["Array"] == True:
+                        if loop_def["Index"] == loop["Var"]:
+                            loop_def["Indices"] = list(loop["Range"])
+                        elif isinstance(loop_def["Index"], int):
+                            loop_def["Indices"] = [int(loop_var["Index"])]
+
                 loop_block["Preds"] = header_block["Preds"]
                 loop_block["Succs"] = header_block["Succs"]
-                killed_defs = []
                 gen_defs = []
                 for block in loop["Blocks"]:
                     if block in loop_block["Preds"]:
                         loop_block["Preds"].remove(block)
                     if block in loop_block["Succs"]:
                         loop_block["Succs"].remove(block)
-
-                    killed_defs += self.reachability[function][block]["KILL"]
                     gen_defs += self.reachability[function][block]["MAYGEN"]
-
-                loop_block["KILL"] = []
-                for definition in killed_defs:
-                    if definition not in gen_defs:
-                        loop_block["KILL"].append(definition)
 
                 #update Succs and Preds to remove loop
                 for block, lines in self.reachability[function].items():
