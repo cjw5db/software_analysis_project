@@ -398,12 +398,12 @@ class Analyzer:
                                 if index in min_definition["Reachability"][block]:
                                     min_definition["Reachability"][block].remove(index)
                             if len(min_definition["Reachability"][block]) == 0:
-                                if doesgen in reach_block["Mout"]:
-                                    reach_block["Mout"].remove(doesgen)
+                                if min in reach_block["Mout"]:
+                                    reach_block["Mout"].remove(min)
                                     break
                         else:
-                            if doesgen in reach_block["Mout"]:
-                                reach_block["Mout"].remove(doesgen)
+                            if min in reach_block["Mout"]:
+                                reach_block["Mout"].remove(min)
                                 break
 
             for maygen in reach_block["MAYGEN"]:
