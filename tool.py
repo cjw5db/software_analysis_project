@@ -19,7 +19,7 @@ class Analyzer:
     ASSIGNMENT_OPS = ["+=", "-=", "=", "++", "--"]
     COMPARE_OPS = ["<=", ">=", "==", "<", ">"]
 
-    def __init__(self, cfg_str, name_str):
+    def __init__(self, cfg_str):
         self.functions = []
         self.cfg = {}
         self.back_edges = {}
@@ -29,7 +29,6 @@ class Analyzer:
         self.count = {}
         self.reachability = {}
         self.conditionals = {}
-        self.names = name_str.splitlines()
         function = ""
         block = ""
         for line in cfg_str.splitlines():
@@ -699,13 +698,8 @@ if __name__ == "__main__":
     output = subprocess.check_output((cfg_command + sys.argv[1]).split(), stderr=subprocess.STDOUT)
     cfg_str = output.decode('UTF-8')
 
-    #list variable and function names
-    name_command = "clang -c -Xclang -analyze -Xclang -ast-list "
-    output = subprocess.check_output((name_command + sys.argv[1]).split(), stderr=subprocess.STDOUT)
-    name_str = output.decode('UTF-8')
-
     #initialize CFG
-    cfg = Analyzer(cfg_str, name_str)
+    cfg = Analyzer(cfg_str)
 
     #generate dominance tree
     dom_command = "clang -c -Xclang -analyze -Xclang -analyzer-checker=debug.DumpDominators "
