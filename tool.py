@@ -576,13 +576,20 @@ class Analyzer:
         self.calculate_flat()
 
     def identify_unnecessary_klee_assume(self, verbose=False):
+        string = ""
         for function in self.functions:
             for number, definition in self.definitions[function].items():
                 if definition["KleeAssume"] == True:
                     entry = None
                     variable = definition["Var"]
-                    indices = definition["Indices"].copy()
-                    necessary_indices = []
+                    all = None
+                    necessary = None
+                    if definition["Array"] == True:
+                        all = definition["Indices"].copy()
+                        necessary = []
+                    else:
+                        all = definition["Var"]
+                        necessary = False
                     for block, lines in self.reachability[function].items():
                         if number in lines["DOESGEN"]:
                             entry = block
@@ -615,37 +622,62 @@ class Analyzer:
                                     break
                             if ready == False:
                                 continue
-                        if block in definition["Reachability"] and reach_block["CONDITIONAL"] == True:
+                        if reach_block["CONDITIONAL"] == True:
                             for condition_block in self.conditionals[function][block]:
                                 if condition_block["Var"] == variable:
-                                    for index in condition_block["Indices"]:
-                                        if index not in necessary_indices and index in definition["Reachability"][block]:
-                                            necessary_indices.append(index)
+                                    if definition["Array"] == True:
+                                        if block not in definition["Reachability"]:
+                                            break
+                                        for index in condition_block["Indices"]:
+                                            if index not in necessary and index in definition["Reachability"][block]:
+                                                necessary.append(index)
+                                    else:
+                                        if number in reach_block["Min"]:
+                                            necessary = True
                         seen.add(block)
                         for succs in reach_block["Succs"]:
                             if succs not in seen:
                                 q.put(succs)
-                    definition["UnnecessaryIndices"] = []
-                    for index in indices:
-                        if index not in necessary_indices:
-                            definition["UnnecessaryIndices"].append(index)
-                    string = "klee_assume(" + definition["Def"] + "):\n"
-                    if verbose:
-                        string += "\tUnnecessary Indices:" + str(definition["UnnecessaryIndices"])
+                    if definition["Array"] == True:
+                        definition["Unnecessary"] = []
+                        for index in all:
+                            if index not in necessary:
+                                definition["Unnecessary"].append(index)
+                        string += "\nklee_assume(" + definition["Def"] + "):\n"
+                        if verbose:
+                            string += "\tUnnecessary Indices:" + str(definition["Unnecessary"]) + "\n"
+                            string += "\tNecessary Indices:" + str(necessary) + "\n"
+                        else:
+                            percent_unnecessary = round(len(definition["Unnecessary"]) / len(all), 4) * 100
+                            string += "\tPercent Unnecessary: " + str(percent_unnecessary) + "%\n"
                     else:
-                        percent_unnecessary = round(len(definition["UnnecessaryIndices"]) / len(indices), 2)
-                        string += "\tPercent Unnecessary: {0:.0%}".format(percent_unnecessary)
-                    return string
+                        string += "\nklee_assume(" + definition["Def"] + "):\n"
+                        string += "\tNecessary: " + str(necessary) + "\n"
+        return string
 
 if __name__ == "__main__":
     usage = "Usage:\n\tThis program takes in c files and outputs klee_assume calls that are unnecessary.\n"
-    usage += "\tCommand line arguments:\n\t\tc files\n\t\t--verbose to show all unused klee_assume array indices\n\t\t--help to show this message.\n"
+    usage += "\tCommand line arguments:\n"
+    usage += "\t\t1) *.c files\n"
+    usage += "\t\t2) --verbose to show all unused klee_assume array indices\n"
+    usage += "\t\t3) --help to show this message.\n"
     usage += "\tConstraints:\n"
+    usage += "\t\t1) Only for-loops are allowed and must be of the form: for(var = const; var comp const; var op)\n"
+    usage += "\t\t   such that: \n"
+    usage += "\t\t   \tcomp = { <=, >=, <, > }\n"
+    usage += "\t\t   \top = { ++, --, += const, -= const }\n"
+    usage += "\t\t2) Array accesses cannot be functions\n"
+    usage += "\t\t   Allowed: arr[var], arr[const]\n"
+    usage += "\t\t   Not allowed: arr[i + 3], arr[1 + 3], arr[i * j], etc.\n"
+    usage += "\t\t3) Loops cannot contain return statements.  This makes it impossible to identify loops in the control flow graph.\n"
+    usage += "\t\t4) Nested loops are not allowed.\n"
+    usage += "\t\t5) Analysis of scalars can create false-positives, but this is not the focus of the tool.\n"
+
     verbose = False
 
     #validate command line input
     if len(sys.argv) < 2:
-        print("Command line arguments are required")
+        print(usage)
         exit()
     else:
         for arg in sys.argv[1:]:
